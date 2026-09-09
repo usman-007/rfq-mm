@@ -77,7 +77,7 @@ uv python install 3.12
 uv sync --all-groups
 
 # 3. Validate a venue config
-uv run mm venues/eix.yaml
+uv run mm validate venues/eix.yaml
 ```
 
 If `uv` is unavailable, a generated `requirements.txt` is committed as a fallback:
@@ -118,7 +118,7 @@ output (which needs only Plotly.js via CDN, not kaleido) — only the static PDF
 
 | Command | Does |
 |---|---|
-| `mm venues/eix.yaml` | Validate and pretty-print a venue rulebook (see note below on the command name) |
+| `mm validate <venue>` | Validate and pretty-print a venue rulebook |
 | `mm run <venue> --date YYYY-MM-DD` | Run one simulated day end-to-end; writes fills/quotes/audit to `--out-dir` and prints a compliance + P&L summary |
 | `mm report <venue> --date YYYY-MM-DD` | Run one simulated day and emit a self-contained interactive HTML + PDF desk report to `--report-dir` |
 | `mm sweep <venue> --date YYYY-MM-DD` | γ × φ × inventory-limit sensitivity grid, written to CSV |
@@ -127,17 +127,12 @@ output (which needs only Plotly.js via CDN, not kaleido) — only the static PDF
 Run `mm <command> --help` for the full option list (feed tier, seed, γ, informed fraction,
 inventory limit, ISIN list, ...).
 
-> **Note on `mm venues/eix.yaml` vs `mm validate venues/eix.yaml`:** Typer collapses the
-> subcommand name away when only one command is registered on the app, and `validate` was
-> the first command built. With `run`/`report`/`sweep`/`audit export` now also registered,
-> `mm validate venues/eix.yaml` works as the more discoverable form too — both work.
-
 ### Examples
 
 ```bash
 # Validate both venue configs
-uv run mm venues/eix.yaml
-uv run mm venues/gettex.yaml
+uv run mm validate venues/eix.yaml
+uv run mm validate venues/gettex.yaml
 
 # Run one day on EIX, synthetic feed, six DAX names + two ETFs (the default universe)
 uv run mm run venues/eix.yaml --date 2026-09-07
