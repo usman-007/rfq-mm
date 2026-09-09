@@ -30,6 +30,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from rfq_mm.core.types import Fill, Quote
+from rfq_mm.engine.rfq import RfqOutcome
 from rfq_mm.feed.base import ReferenceMarketFeed
 from rfq_mm.risk.hedger import HedgeResult
 
@@ -196,6 +197,34 @@ def fill_ratio_by_size_bucket(quotes: list[Quote], filled_quote_ids: set[str]) -
         if q.quote_id in filled_quote_ids:
             filled_counts[bucket] = filled_counts.get(bucket, 0) + 1
     return {bucket: filled_counts.get(bucket, 0) / count for bucket, count in quoted_counts.items()}
+
+
+def quoted_vs_reference_series(outcomes: list[RfqOutcome]) -> pd.DataFrame:
+    """R152-R153: quoted spread vs. reference spread (bps) over the day,
+    with the §7(1) cap alongside — one row per issued quote."""
+    rows = []
+    for outcome in outcomes:
+        if outcome.quote is None or outcome.reference_spread is None:
+            continue
+        mid = (outcome.quote.bid + outcome.quote.ask) / 2.0
+        if mid <= 0:
+            continue
+        rows.append(
+            {
+                "ts": outcome.quote.ts_issued,
+                "isin": outcome.quote.isin,
+                "quoted_spread_bps": outcome.quote.spread / mid * 10_000.0,
+                "reference_spread_bps": outcome.reference_spread / mid * 10_000.0,
+                "cap_bps": (
+                    outcome.regulatory_cap / mid * 10_000.0
+                    if outcome.regulatory_cap is not None
+                    else None
+                ),
+                "was_clamped": outcome.regulatory_cap is not None
+                and outcome.quote.spread >= outcome.regulatory_cap - 1e-9,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def intraday_sharpe(pnl_snapshots: list[float]) -> float:

@@ -1,8 +1,4 @@
-"""Typer CLI: mm validate | run | sweep | audit export.
-
-`mm report` is not implemented here yet — it needs the Jinja2/weasyprint
-report template, which doesn't exist as of this command's implementation.
-"""
+"""Typer CLI: mm validate | run | report | sweep | audit export."""
 
 from __future__ import annotations
 
@@ -18,16 +14,26 @@ import yaml
 
 from rfq_mm.analytics.metrics import (
     compute_fill_spread_stats,
+    compute_markouts,
     compute_pnl_attribution,
+    fill_ratio_by_size_bucket,
     intraday_sharpe,
     inventory_path_stats,
+    markout_summary,
+    quoted_vs_reference_series,
 )
 from rfq_mm.analytics.sweep import SweepPoint, run_sweep, sweep_to_frame
 from rfq_mm.compliance.audit import AuditLog
 from rfq_mm.compliance.monitor import build_compliance_report
 from rfq_mm.core.clock import SessionCalendar
+from rfq_mm.core.types import Instrument
 from rfq_mm.engine.quoter import QuoterParams
-from rfq_mm.engine.simulation import SimulationParams, run_day_simulation, write_audit_trail
+from rfq_mm.engine.simulation import (
+    SimulationParams,
+    SimulationResult,
+    run_day_simulation,
+    write_audit_trail,
+)
 from rfq_mm.feed.bars import BarsFeed
 from rfq_mm.feed.base import ReferenceMarketFeed
 from rfq_mm.feed.synthetic import SyntheticFeed, SyntheticFeedParams
@@ -50,40 +56,19 @@ def _build_sessions(venue_config: VenueConfig) -> tuple[SessionCalendar, Session
     return venue_session, reference_session
 
 
-@app.command()
-def validate(venue_file: Path) -> None:
-    """Load a venue rulebook YAML, validate it, and print the parsed config."""
-    try:
-        config = load_venue_config(venue_file)
-    except pydantic.ValidationError as e:
-        typer.secho(f"INVALID venue config: {venue_file}", fg=typer.colors.RED, err=True)
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=1) from e
-    except yaml.YAMLError as e:
-        typer.secho(f"MALFORMED YAML: {venue_file}", fg=typer.colors.RED, err=True)
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=1) from e
-
-    typer.secho(f"OK: {venue_file}", fg=typer.colors.GREEN)
-    typer.echo(json.dumps(config.model_dump(mode="json"), indent=2, default=str))
-
-
-@app.command()
-def run(
+def _build_feed_and_run(
     venue_file: Path,
-    isins: str = typer.Option(
-        ",".join(LIVE_SIM_ISINS), help="Comma-separated ISINs to simulate"
-    ),
-    sim_date: str = typer.Option(..., "--date", help="Simulated day, YYYY-MM-DD"),
-    seed: int = typer.Option(42),
-    feed_tier: str = typer.Option("synthetic", "--feed", help="synthetic | bars"),
-    out_dir: Path = typer.Option(Path("out")),  # noqa: B008
-    gamma: float = typer.Option(QuoterParams().gamma),  # noqa: B008
-    informed_fraction: float = typer.Option(0.1),
-    inventory_limit_eur: float = typer.Option(300_000.0),
-) -> None:
-    """Run one simulated trading day end-to-end and write fills/quotes/audit
-    to --out-dir, printing a compliance + P&L summary."""
+    isins: str,
+    sim_date: str,
+    seed: int,
+    feed_tier: str,
+    out_dir: Path,
+    gamma: float,
+    informed_fraction: float,
+    inventory_limit_eur: float,
+) -> tuple[VenueConfig, ReferenceMarketFeed, dict[str, Instrument], SimulationResult]:
+    """Shared by `run` and `report`: load config, build the feed, run one
+    day-simulation. Returns (venue_config, feed, instruments, result)."""
     venue_config = load_venue_config(venue_file)
     venue_session, reference_session = _build_sessions(venue_config)
     isin_list = [i.strip() for i in isins.split(",") if i.strip()]
@@ -136,6 +121,53 @@ def run(
     result = run_day_simulation(
         venue_config, venue_session, reference_session, feed, instruments, params
     )
+    return venue_config, feed, instruments, result
+
+
+@app.command()
+def validate(venue_file: Path) -> None:
+    """Load a venue rulebook YAML, validate it, and print the parsed config."""
+    try:
+        config = load_venue_config(venue_file)
+    except pydantic.ValidationError as e:
+        typer.secho(f"INVALID venue config: {venue_file}", fg=typer.colors.RED, err=True)
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1) from e
+    except yaml.YAMLError as e:
+        typer.secho(f"MALFORMED YAML: {venue_file}", fg=typer.colors.RED, err=True)
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1) from e
+
+    typer.secho(f"OK: {venue_file}", fg=typer.colors.GREEN)
+    typer.echo(json.dumps(config.model_dump(mode="json"), indent=2, default=str))
+
+
+@app.command()
+def run(
+    venue_file: Path,
+    isins: str = typer.Option(",".join(LIVE_SIM_ISINS), help="Comma-separated ISINs to simulate"),
+    sim_date: str = typer.Option(..., "--date", help="Simulated day, YYYY-MM-DD"),
+    seed: int = typer.Option(42),
+    feed_tier: str = typer.Option("synthetic", "--feed", help="synthetic | bars"),
+    out_dir: Path = typer.Option(Path("out")),  # noqa: B008
+    gamma: float = typer.Option(QuoterParams().gamma),  # noqa: B008
+    informed_fraction: float = typer.Option(0.1),
+    inventory_limit_eur: float = typer.Option(300_000.0),
+) -> None:
+    """Run one simulated trading day end-to-end and write fills/quotes/audit
+    to --out-dir, printing a compliance + P&L summary."""
+    venue_config, feed, instruments, result = _build_feed_and_run(
+        venue_file,
+        isins,
+        sim_date,
+        seed,
+        feed_tier,
+        out_dir,
+        gamma,
+        informed_fraction,
+        inventory_limit_eur,
+    )
+    isin_list = list(instruments)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([dc.asdict(f) for f in result.fills]).to_parquet(out_dir / "fills.parquet")
@@ -187,6 +219,114 @@ def run(
             f"{attribution.hedge_slippage_eur:,.2f}) "
             f"reconciliation_error={attribution.reconciliation_error_eur():.4f}"
         )
+
+
+@app.command()
+def report(
+    venue_file: Path,
+    isins: str = typer.Option(",".join(LIVE_SIM_ISINS), help="Comma-separated ISINs to simulate"),
+    sim_date: str = typer.Option(..., "--date", help="Simulated day, YYYY-MM-DD"),
+    seed: int = typer.Option(42),
+    feed_tier: str = typer.Option("synthetic", "--feed", help="synthetic | bars"),
+    out_dir: Path = typer.Option(Path("out")),  # noqa: B008
+    gamma: float = typer.Option(QuoterParams().gamma),  # noqa: B008
+    informed_fraction: float = typer.Option(0.1),
+    inventory_limit_eur: float = typer.Option(300_000.0),
+    report_dir: Path = typer.Option(Path("reports")),  # noqa: B008
+) -> None:
+    """Run one simulated day and emit a self-contained interactive HTML
+    report plus a PDF (spec.md §8 deliverable #2, §9). Compliance and
+    markouts pool across every simulated ISIN; P&L attribution and the
+    inventory chart focus on the first ISIN in --isins for a clean
+    single-instrument narrative."""
+    # Imported lazily: report.build pulls in weasyprint, which needs system
+    # libraries (pango/cairo/gobject) that other commands (validate/run/
+    # sweep/audit) don't require — keep those working even where weasyprint
+    # can't be imported.
+    from rfq_mm.report.build import (
+        build_inventory_chart,
+        build_markout_chart,
+        build_pnl_attribution_chart,
+        build_quoted_vs_reference_chart,
+        html_to_pdf,
+        render_desk_report_html,
+    )
+
+    venue_config, feed, instruments, result = _build_feed_and_run(
+        venue_file,
+        isins,
+        sim_date,
+        seed,
+        feed_tier,
+        out_dir,
+        gamma,
+        informed_fraction,
+        inventory_limit_eur,
+    )
+    isin_list = list(instruments)
+    primary_isin = isin_list[0]
+
+    compliance = build_compliance_report(
+        result.response_tracker,
+        result.compliance_log,
+        n_accept_attempts=len(result.fills) + len(result.compliance_log.withdrawal_events),
+        min_response_ratio=venue_config.obligations.min_response_ratio,
+    )
+
+    primary_fills = [f for f in result.fills if f.isin == primary_isin]
+    primary_hedges = [h for h in result.hedges if h.isin == primary_isin]
+    attribution = compute_pnl_attribution(
+        primary_fills,
+        primary_hedges,
+        feed,
+        result.final_units[primary_isin],
+        result.final_mark[primary_isin],
+    )
+
+    markouts = compute_markouts(result.fills, feed)
+    fill_ratio = fill_ratio_by_size_bucket(result.quotes, result.filled_quote_ids)
+
+    inv_stats = inventory_path_stats(result.inventory_snapshots[primary_isin])
+    hedge_cost = sum(h.cost_eur for h in primary_hedges)
+
+    context = {
+        "venue_name": venue_config.venue.name,
+        "venue_source": venue_config.venue.source,
+        "sim_date": sim_date,
+        "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
+        "response_ratio": compliance.response_ratio,
+        "response_ratio_floor": compliance.response_ratio_floor,
+        "presented": compliance.presented,
+        "answered": compliance.answered,
+        "n_clamp_events": compliance.n_clamp_events,
+        "n_withdrawals": compliance.n_withdrawals,
+        "n_firm_size_breaches": compliance.n_firm_size_breaches,
+        "is_compliant": compliance.is_compliant,
+        "breaches": [{"category": b.category, "detail": b.detail} for b in compliance.breaches],
+        "reconciliation_error_eur": attribution.reconciliation_error_eur(),
+        "max_abs_inventory_eur": inv_stats.max_abs_position_eur,
+        "time_weighted_inventory_eur": inv_stats.time_weighted_position_eur,
+        "hedge_cost_eur": hedge_cost,
+        "fill_ratio_by_bucket": fill_ratio,
+    }
+    figures = {
+        "pnl": build_pnl_attribution_chart(attribution),
+        "markout": build_markout_chart(markout_summary(markouts)),
+        "spread": build_quoted_vs_reference_chart(quoted_vs_reference_series(result.outcomes)),
+        "inventory": build_inventory_chart(result.inventory_snapshots[primary_isin]),
+    }
+
+    report_dir.mkdir(parents=True, exist_ok=True)
+    html_interactive = render_desk_report_html(context, figures, mode="interactive")
+    html_path = report_dir / f"desk_report_{sim_date}.html"
+    html_path.write_text(html_interactive)
+
+    html_static = render_desk_report_html(context, figures, mode="static")
+    pdf_path = report_dir / f"desk_report_{sim_date}.pdf"
+    html_to_pdf(html_static, pdf_path)
+
+    typer.secho(f"wrote {html_path}", fg=typer.colors.GREEN)
+    typer.secho(f"wrote {pdf_path}", fg=typer.colors.GREEN)
 
 
 @app.command()

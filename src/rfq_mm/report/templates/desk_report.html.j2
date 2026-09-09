@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Desk report — {{ venue_name }} — {{ sim_date }}</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #1a1a1a; margin: 2rem; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.2rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #ccc; padding-bottom: 0.2rem; }
+  .subtitle { color: #666; margin-top: 0; }
+  .disclaimer { background: #fff8e1; border: 1px solid #e0c060; padding: 0.6rem 1rem; font-size: 0.85rem; margin: 1rem 0; }
+  .grid { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }
+  .stat { background: #f5f5f5; border-radius: 6px; padding: 0.6rem 1rem; min-width: 150px; }
+  .stat .label { font-size: 0.75rem; color: #666; text-transform: uppercase; }
+  .stat .value { font-size: 1.3rem; font-weight: 600; }
+  .compliant { color: #1a7f37; }
+  .breach { color: #c62828; }
+  table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; }
+  th, td { text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
+  th { background: #f0f0f0; }
+  .chart { margin: 1rem 0; }
+  .chart img { max-width: 100%; }
+  footer { margin-top: 2rem; font-size: 0.75rem; color: #999; }
+</style>
+</head>
+<body>
+  <h1>Desk report — {{ venue_name }}</h1>
+  <p class="subtitle">Simulated trading day: {{ sim_date }} &middot; generated {{ generated_at }}</p>
+
+  <div class="disclaimer">
+    Every figure on this page is simulated (see README §"What is simulated"). This venue is not
+    connected to any real market-maker system; nothing here reflects real EIX, gettex, or any
+    other venue's actual trading activity.
+  </div>
+
+  <h2>Compliance</h2>
+  <div class="grid">
+    <div class="stat">
+      <div class="label">Response ratio</div>
+      <div class="value {{ 'compliant' if is_compliant else 'breach' }}">{{ "%.2f"|format(response_ratio * 100) }}%</div>
+    </div>
+    <div class="stat">
+      <div class="label">Floor (§5(1))</div>
+      <div class="value">{{ "%.0f"|format(response_ratio_floor * 100) }}%</div>
+    </div>
+    <div class="stat">
+      <div class="label">Presented / answered</div>
+      <div class="value">{{ presented }} / {{ answered }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Clamp events (§7(1))</div>
+      <div class="value">{{ n_clamp_events }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Withdrawals (§8(2))</div>
+      <div class="value">{{ n_withdrawals }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Firm-size breaches (§8(3))</div>
+      <div class="value">{{ n_firm_size_breaches }}</div>
+    </div>
+  </div>
+
+  {% if is_compliant %}
+    <p class="compliant">No compliance breaches on this run.</p>
+  {% else %}
+    <table>
+      <tr><th>Category</th><th>Detail</th></tr>
+      {% for b in breaches %}
+      <tr><td>{{ b.category }}</td><td>{{ b.detail }}</td></tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+
+  <h2>P&amp;L attribution</h2>
+  <div class="chart">
+    {% if mode == "interactive" %}
+      {{ charts.pnl | safe }}
+    {% else %}
+      <img src="data:image/png;base64,{{ chart_images.pnl }}" alt="P&amp;L attribution">
+    {% endif %}
+  </div>
+  <p>Reconciliation error: {{ "%.6f"|format(reconciliation_error_eur) }} EUR (must be &lt; 0.01, R162).</p>
+
+  <h2>Markout curve</h2>
+  <div class="chart">
+    {% if mode == "interactive" %}
+      {{ charts.markout | safe }}
+    {% else %}
+      <img src="data:image/png;base64,{{ chart_images.markout }}" alt="Markout curve">
+    {% endif %}
+  </div>
+
+  <h2>Quoted vs. reference spread</h2>
+  <div class="chart">
+    {% if mode == "interactive" %}
+      {{ charts.spread | safe }}
+    {% else %}
+      <img src="data:image/png;base64,{{ chart_images.spread }}" alt="Quoted vs reference spread">
+    {% endif %}
+  </div>
+
+  <h2>Inventory path</h2>
+  <div class="chart">
+    {% if mode == "interactive" %}
+      {{ charts.inventory | safe }}
+    {% else %}
+      <img src="data:image/png;base64,{{ chart_images.inventory }}" alt="Inventory path">
+    {% endif %}
+  </div>
+  <div class="grid">
+    <div class="stat"><div class="label">Max abs. inventory</div><div class="value">{{ "{:,.0f}".format(max_abs_inventory_eur) }} EUR</div></div>
+    <div class="stat"><div class="label">Time-weighted inventory</div><div class="value">{{ "{:,.0f}".format(time_weighted_inventory_eur) }} EUR</div></div>
+    <div class="stat"><div class="label">Hedge cost</div><div class="value">{{ "{:,.2f}".format(hedge_cost_eur) }} EUR</div></div>
+  </div>
+
+  <h2>Fills &amp; fill ratio</h2>
+  <table>
+    <tr><th>Size bucket</th><th>Fill ratio</th></tr>
+    {% for bucket, ratio in fill_ratio_by_bucket.items() %}
+    <tr><td>{{ bucket }}</td><td>{{ "%.1f"|format(ratio * 100) }}%</td></tr>
+    {% endfor %}
+  </table>
+
+  <footer>
+    Generated by rfq-mm &middot; {{ generated_at }} &middot; venue rulebook: {{ venue_source }}
+  </footer>
+</body>
+</html>

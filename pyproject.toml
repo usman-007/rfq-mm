@@ -15,6 +15,7 @@ dependencies = [
     "pyarrow>=16",
     "plotly>=5",
     "kaleido>=0.2.1",
+    "matplotlib>=3.8",
     "jinja2>=3",
     "weasyprint>=62",
     "structlog>=24",
@@ -46,7 +47,12 @@ line-length = 100
 target-version = "py312"
 # Never touch docs — ruff format reformats fenced ```python blocks inside
 # markdown by default, and spec.md must stay byte-for-byte as given.
-extend-exclude = ["*.md"]
+# notebooks/ is excluded from lint/format: it's a narrative deliverable
+# with committed execution outputs (PLAN.md Decision D6) — re-linting or
+# reformatting it risks invalidating those baked-in outputs, and its
+# prose-adjacent code cells aren't held to the same line-length style as
+# the package itself.
+extend-exclude = ["*.md", "notebooks/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -61,7 +67,7 @@ module = "rfq_mm.core.*"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["yfinance.*", "kaleido.*", "weasyprint.*"]
+module = ["yfinance.*", "kaleido.*", "weasyprint.*", "plotly.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

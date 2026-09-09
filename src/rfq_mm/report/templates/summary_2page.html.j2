@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rfq-mm — application summary</title>
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #1a1a1a; font-size: 11pt; line-height: 1.45; }
+  h1 { font-size: 1.3rem; margin-bottom: 0.1rem; }
+  h2 { font-size: 1rem; margin-top: 1.2rem; margin-bottom: 0.3rem; }
+  .subtitle { color: #555; margin-top: 0; font-size: 0.95rem; }
+  img { max-width: 100%; }
+  .page-break { page-break-before: always; }
+  footer { font-size: 0.75rem; color: #888; margin-top: 1.5rem; }
+</style>
+</head>
+<body>
+  <h1>rfq-mm — a quote-driven RFQ market-making simulator</h1>
+  <p class="subtitle">{{ generated_at }}</p>
+
+  <h2>Why EIX is RFQ-with-reference-market, not a central limit order book</h2>
+  <p>{{ clob_paragraph }}</p>
+
+  <h2>Markouts: the headline result</h2>
+  <img src="data:image/png;base64,{{ chart_image }}" alt="Markout curve">
+
+  <div class="page-break"></div>
+
+  <h2>Limitations</h2>
+  <p>{{ limitations_paragraph }}</p>
+
+  <footer>rfq-mm &middot; a research simulator, not connected to EIX or any real venue &middot; see README for the full "what is real / what is simulated" statement.</footer>
+</body>
+</html>
