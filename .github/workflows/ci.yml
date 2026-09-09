@@ -30,3 +30,21 @@ jobs:
 
       - name: pytest
         run: uv run pytest -q
+
+      - name: System deps for weasyprint (PDF) and kaleido (chart PNGs)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf2.0-0 libffi-dev
+          uv run plotly_get_chrome -y
+
+      - name: Run a 1-day simulation
+        run: uv run mm run venues/eix.yaml --date 2026-09-07 --out-dir ci-out
+
+      - name: Generate desk report
+        run: uv run mm report venues/eix.yaml --date 2026-09-07 --report-dir ci-report
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desk-report
+          path: ci-report/
