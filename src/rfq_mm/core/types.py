@@ -116,6 +116,7 @@ class RFQ:
     side: Side
     requested_size_eur: float
     is_exempt: bool
+    is_informed: bool = False
     exemption_type: str | None = None
 
     def __post_init__(self) -> None:
