@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import utils.transport
+import utils.session
 import dataclasses as dc
 import json
 from datetime import date

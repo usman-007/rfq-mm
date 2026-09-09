@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from rfq_mm.analytics.metrics import (
+    Markout,
     compute_fill_spread_stats,
     compute_markouts,
     compute_pnl_attribution,
@@ -11,6 +12,8 @@ from rfq_mm.analytics.metrics import (
     intraday_sharpe,
     inventory_path_stats,
     markout_summary,
+    markout_summary_by_requester,
+    markout_summary_by_size_bucket,
     quoted_vs_reference_series,
     size_bucket,
     volume_weighted_effective_spread_bps,
@@ -266,3 +269,38 @@ def test_quoted_vs_reference_series_unclamped_when_below_cap() -> None:
 def test_quoted_vs_reference_series_empty_input() -> None:
     df = quoted_vs_reference_series([])
     assert df.empty
+
+
+def _markouts() -> list[Markout]:
+    return [
+        Markout(fill_id="f1", isin=ISIN, requester_id="req-A", size_eur=100.0,
+                horizon_seconds=60.0, bps=5.0),
+        Markout(fill_id="f2", isin=ISIN, requester_id="req-A", size_eur=15_000.0,
+                horizon_seconds=60.0, bps=-3.0),
+        Markout(fill_id="f3", isin=ISIN, requester_id="req-B", size_eur=100.0,
+                horizon_seconds=60.0, bps=1.0),
+    ]
+
+
+def test_markout_summary_by_size_bucket_splits_correctly() -> None:
+    df = markout_summary_by_size_bucket(_markouts())
+    buckets = set(df["size_bucket"])
+    assert buckets == {"0-500", "10000+"}
+    small = df[df["size_bucket"] == "0-500"].iloc[0]
+    assert small["count"] == 2  # f1 and f3
+    assert small["mean"] == pytest.approx(3.0)
+
+
+def test_markout_summary_by_requester_splits_correctly() -> None:
+    df = markout_summary_by_requester(_markouts())
+    req_a = df[df["requester_id"] == "req-A"].iloc[0]
+    req_b = df[df["requester_id"] == "req-B"].iloc[0]
+    assert req_a["count"] == 2
+    assert req_a["mean"] == pytest.approx(1.0)
+    assert req_b["count"] == 1
+    assert req_b["mean"] == pytest.approx(1.0)
+
+
+def test_markout_summary_splits_are_empty_for_no_markouts() -> None:
+    assert markout_summary_by_size_bucket([]).empty
+    assert markout_summary_by_requester([]).empty
