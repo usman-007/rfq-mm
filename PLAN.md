@@ -22,7 +22,8 @@ rfq-market-maker/
 │   ├── core/
 │   │   ├── types.py             # Quote, RFQ, Fill, BBO, Position, Instrument
 │   │   ├── clock.py
-│   │   └── ticks.py
+│   │   ├── ticks.py
+│   │   └── eventloop.py         # heapq event queue; not named in spec's literal tree, and not actually used by run_day_simulation (below), which merge-sorts its event list directly since nothing here needs dynamic re-scheduling
 │   ├── venue/
 │   │   ├── config.py
 │   │   ├── obligations.py
@@ -36,7 +37,9 @@ rfq-market-maker/
 │   │   └── universe.py          # curated fixture, see Decision D1
 │   ├── engine/
 │   │   ├── quoter.py
-│   │   └── rfq.py
+│   │   ├── rfq.py
+│   │   ├── simulation.py        # one-day orchestrator; not named in spec's literal tree, necessary glue (see §4 Decisions)
+│   │   └── lom.py               # §9, built at S12 — see Decision D14
 │   ├── risk/
 │   │   ├── inventory.py
 │   │   └── hedger.py
@@ -93,8 +96,9 @@ Each step: implement → run `ruff check`, `mypy`, `pytest` → report pass/fail
 | **S9** | `report/build.py` + `desk_report.html.j2` (Jinja2→HTML→weasyprint PDF), `docs/summary_2page.pdf` template, full README (all 5 required sections), `notebooks/01_results.ipynb` (authored, then executed once via `nbclient` so outputs are committed) | R55-R58,R114w,R175,R178-R189,R34 |
 | **S10** | Finish `.github/workflows/ci.yml`: ruff → mypy → pytest → 1-day sim → upload report artifact; README badge | R66-R71 |
 | **S11** | Re-read `spec.md` line by line against `REQUIREMENTS.md`; report anything skipped, changed, or deferred | DONE MEANS clause |
+| **S12** | Found at the S11 audit and confirmed with the user before building: `engine/lom.py` (§3/§9, the LOM execution path — see Decision D14), and §8(3) halt enforcement (see Decision D15). Plus closing the untested-MUST gaps the audit also surfaced (`report/build.py`, `quoted_vs_reference_series`, `write_audit_trail`) | R2,R15,R17,R18,R114n |
 
-After S11, core build is "done." `real_l1.py` (LOBSTER) is then attempted as a best-effort follow-up (network/data permitting) and reported on separately — not blocking.
+After S12, core build is "done." `real_l1.py` (LOBSTER) is then attempted as a best-effort follow-up (network/data permitting) and reported on separately — not blocking.
 
 ## 4. Decisions (resolving the 13 open questions, biased toward less complexity)
 

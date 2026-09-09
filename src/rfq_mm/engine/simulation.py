@@ -14,11 +14,18 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from numpy.random import default_rng
+from numpy.random import Generator, default_rng
 
 from rfq_mm.compliance.audit import AuditLog
 from rfq_mm.core.clock import SessionCalendar
 from rfq_mm.core.types import RFQ, Fill, Instrument, Quote
+from rfq_mm.engine.lom import (
+    LimitOrder,
+    LimitOrderBook,
+    LomFlowParams,
+    generate_limit_orders,
+    recheck_tick_times,
+)
 from rfq_mm.engine.quoter import MarkoutTracker, QuoterParams, TradingCosts
 from rfq_mm.engine.rfq import (
     ComplianceLog,
@@ -76,6 +83,8 @@ class SimulationParams:
     p_accept: float = 0.9
     reaction_delay_range: tuple[float, float] = (0.5, 8.0)
     markout_feedback_horizon_seconds: float = 10.0
+    lom_params: LomFlowParams | None = None  # §9; None => LomFlowParams(seed=seed)
+    lom_recheck_seconds: float = 15.0
 
 
 @dataclass(slots=True)
@@ -93,6 +102,148 @@ class SimulationResult:
     final_units: dict[str, float]
     final_mark: dict[str, float]
     killed_isins: set[str]
+    lom_orders: list[LimitOrder]
+
+
+@dataclass(slots=True)
+class _LoopState:
+    """Mutable state shared across every RFQ processed in a simulated day —
+    whether it arrived from the client flow or was auto-fired by the LOM
+    (engine/lom.py) — so both paths record fills/quotes/inventory/hedges
+    through the exact same code (_process_rfq below)."""
+
+    rng: Generator
+    markout_tracker: MarkoutTracker
+    response_tracker: ResponseRatioTracker
+    compliance_log: ComplianceLog
+    book: InventoryBook
+    quotes: list[Quote]
+    fills: list[Fill]
+    filled_quote_ids: set[str]
+    hedges: list[HedgeResult]
+    outcomes: list[RfqOutcome]
+    inventory_snapshots: dict[str, list[tuple[datetime, float]]]
+    killed_isins: set[str]
+    active_halts: dict[str, datetime]
+    final_mark: dict[str, float]
+
+
+def _process_rfq(
+    rfq: RFQ,
+    *,
+    forced_accept_ts: datetime | None,
+    venue_config: VenueConfig,
+    venue_session: SessionCalendar,
+    reference_session: SessionCalendar,
+    feed: ReferenceMarketFeed,
+    instruments: dict[str, Instrument],
+    flow_params: FlowParams,
+    sim_params: SimulationParams,
+    state: _LoopState,
+) -> Fill | None:
+    """Runs one RFQ through the full §5/§8 pipeline (exemption check ->
+    quote -> acceptance -> fill) and records its effect on every piece of
+    shared day state. Shared by genuine RFQ arrivals (forced_accept_ts is
+    None, so acceptance is decide_acceptance's random client-behaviour
+    roll) and LOM-triggered auto-fired RFQs (forced_accept_ts is the
+    recheck-tick timestamp: a resting limit order is a standing
+    commitment, not a fresh ad hoc request to be randomly declined)."""
+    instrument = instruments[rfq.isin]
+    mark = feed.bbo(rfq.ts, rfq.isin, rfq.requested_size_eur).mid
+    state.final_mark[rfq.isin] = mark
+
+    if rfq.isin in state.killed_isins:
+        state.outcomes.append(RfqOutcome(rfq=rfq, quote=None, live_quote=None))
+        return None
+
+    halt_until = _active_halt(state.active_halts, rfq.isin, rfq.ts)
+    if halt_until is not None:
+        state.compliance_log.halted_events.append(
+            HaltBlockedEvent(ts=rfq.ts, isin=rfq.isin, rfq_id=rfq.rfq_id, halt_until=halt_until)
+        )
+        state.response_tracker.record(rfq.isin, is_exempt=True, was_answered=False)
+        state.outcomes.append(RfqOutcome(rfq=rfq, quote=None, live_quote=None))
+        return None
+
+    outcome = process_rfq(
+        rfq,
+        venue_config=venue_config,
+        venue_session=venue_session,
+        reference_session=reference_session,
+        feed=feed,
+        instrument=instrument,
+        inventory_units=state.book.units(rfq.isin),
+        inventory_headroom_eur=state.book.headroom_eur(rfq.isin, mark),
+        quoter_params=sim_params.quoter_params,
+        costs=sim_params.costs,
+        markout_tracker=state.markout_tracker,
+        response_tracker=state.response_tracker,
+        compliance_log=state.compliance_log,
+    )
+    state.outcomes.append(outcome)
+    if outcome.quote is None or outcome.live_quote is None:
+        return None
+    state.quotes.append(outcome.quote)
+
+    if forced_accept_ts is not None:
+        accept_ts: datetime | None = forced_accept_ts
+    else:
+        accept_ts = decide_acceptance(
+            outcome.quote,
+            state.rng,
+            p_accept=sim_params.p_accept,
+            reaction_delay_range=sim_params.reaction_delay_range,
+        )
+    if accept_ts is None:
+        return None
+
+    accept_size = min(rfq.requested_size_eur, outcome.quote.firm_size_eur)
+    n_breaches_before = len(state.compliance_log.breach_events)
+    fill = accept_quote(
+        outcome.live_quote,
+        accept_ts,
+        accept_size,
+        rfq.side,
+        rfq.requester_id,
+        feed=feed,
+        venue_config=venue_config,
+        is_informed=rfq.is_informed,
+        informed_drift_bps=flow_params.informed_drift_bps,
+        markout_tracker=state.markout_tracker,
+        compliance_log=state.compliance_log,
+        markout_feedback_horizon_seconds=sim_params.markout_feedback_horizon_seconds,
+    )
+    if len(state.compliance_log.breach_events) > n_breaches_before:
+        state.active_halts[rfq.isin] = state.compliance_log.breach_events[-1].halt_until
+    if fill is None:
+        return None
+
+    state.fills.append(fill)
+    state.filled_quote_ids.add(fill.quote_id)
+    state.book.record_fill(fill)
+    mark = feed.bbo(fill.ts, fill.isin, fill.size_eur).mid
+    state.final_mark[fill.isin] = mark
+    state.inventory_snapshots[fill.isin].append(
+        (fill.ts, state.book.position_eur(fill.isin, mark))
+    )
+
+    if state.book.is_killed(fill.isin, mark):
+        state.killed_isins.add(fill.isin)
+
+    hedge_bbo = feed.bbo(fill.ts, fill.isin, accept_size)
+    hedge = maybe_hedge(
+        fill.isin, state.book.units(fill.isin), hedge_bbo, fill.ts, sim_params.hedge_params
+    )
+    if hedge is not None:
+        state.book.apply_hedge(fill.isin, hedge.side.sign, hedge.units, hedge.price, hedge.ts)
+        state.hedges.append(hedge)
+        mark = feed.bbo(hedge.ts, hedge.isin, hedge.units * hedge.price).mid
+        state.final_mark[hedge.isin] = mark
+        state.inventory_snapshots[hedge.isin].append(
+            (hedge.ts, state.book.position_eur(hedge.isin, mark))
+        )
+
+    return fill
 
 
 def run_day_simulation(
@@ -114,142 +265,121 @@ def run_day_simulation(
         )
     flow = generate_rfqs(venue_session, params.sim_date, params.isins, flow_params)
 
-    rng = default_rng([params.seed, 0xACCE97])  # distinct salt from the flow/price RNG streams
-    markout_tracker = MarkoutTracker()
-    response_tracker = ResponseRatioTracker()
-    compliance_log = ComplianceLog.empty()
-    book = InventoryBook(limits=params.inventory_limits)
+    lom_params = params.lom_params or LomFlowParams(seed=params.seed)
+    lom_orders = generate_limit_orders(
+        venue_session, params.sim_date, params.isins, feed, lom_params
+    )
+    lom_ticks = recheck_tick_times(venue_session, params.sim_date, params.lom_recheck_seconds)
+    lom_book = LimitOrderBook()
 
-    quotes: list[Quote] = []
-    fills: list[Fill] = []
-    filled_quote_ids: set[str] = set()
-    hedges: list[HedgeResult] = []
-    outcomes: list[RfqOutcome] = []
-    inventory_snapshots: dict[str, list[tuple[datetime, float]]] = {
-        isin: [] for isin in params.isins
-    }
-    killed_isins: set[str] = set()
-    active_halts: dict[str, datetime] = {}  # isin -> halt_until, §8(3)
-    final_mark: dict[str, float] = {}
+    # One time-sorted event stream: RFQ arrivals, LOM order submissions, and
+    # LOM price-update recheck ticks (§9's "two execution paths", processed
+    # through a single deterministic timeline rather than two separate
+    # passes). event kind: 0=rfq, 1=lom_submit, 2=lom_tick; kind breaks ties
+    # at an identical timestamp so ordering is deterministic regardless of
+    # how the lists above happen to be built.
+    events: list[tuple[datetime, int, RFQ | LimitOrder | None]] = []
+    events.extend((rfq.ts, 0, rfq) for rfq in flow.rfqs)
+    events.extend((order.ts_submitted, 1, order) for order in lom_orders)
+    events.extend((ts, 2, None) for ts in lom_ticks)
+    events.sort(key=lambda e: (e[0], e[1]))
+
+    state = _LoopState(
+        rng=default_rng([params.seed, 0xACCE97]),  # distinct salt from the flow/price RNG streams
+        markout_tracker=MarkoutTracker(),
+        response_tracker=ResponseRatioTracker(),
+        compliance_log=ComplianceLog.empty(),
+        book=InventoryBook(limits=params.inventory_limits),
+        quotes=[],
+        fills=[],
+        filled_quote_ids=set(),
+        hedges=[],
+        outcomes=[],
+        inventory_snapshots={isin: [] for isin in params.isins},
+        killed_isins=set(),
+        active_halts={},
+        final_mark={},
+    )
 
     day_start = venue_session.session_open(params.sim_date)
     for isin in params.isins:
-        inventory_snapshots[isin].append((day_start, 0.0))
+        state.inventory_snapshots[isin].append((day_start, 0.0))
 
-    for rfq in flow.rfqs:
-        instrument = instruments[rfq.isin]
-        mark = feed.bbo(rfq.ts, rfq.isin, rfq.requested_size_eur).mid
-        final_mark[rfq.isin] = mark
-
-        if rfq.isin in killed_isins:
-            outcomes.append(RfqOutcome(rfq=rfq, quote=None, live_quote=None))
-            continue
-
-        halt_until = _active_halt(active_halts, rfq.isin, rfq.ts)
-        if halt_until is not None:
-            compliance_log.halted_events.append(
-                HaltBlockedEvent(ts=rfq.ts, isin=rfq.isin, rfq_id=rfq.rfq_id, halt_until=halt_until)
+    lom_fire_seq = 0
+    for ts, kind, payload in events:
+        if kind == 0:
+            assert isinstance(payload, RFQ)
+            _process_rfq(
+                payload,
+                forced_accept_ts=None,
+                venue_config=venue_config,
+                venue_session=venue_session,
+                reference_session=reference_session,
+                feed=feed,
+                instruments=instruments,
+                flow_params=flow_params,
+                sim_params=params,
+                state=state,
             )
-            response_tracker.record(rfq.isin, is_exempt=True, was_answered=False)
-            outcomes.append(RfqOutcome(rfq=rfq, quote=None, live_quote=None))
-            continue
-
-        outcome = process_rfq(
-            rfq,
-            venue_config=venue_config,
-            venue_session=venue_session,
-            reference_session=reference_session,
-            feed=feed,
-            instrument=instrument,
-            inventory_units=book.units(rfq.isin),
-            inventory_headroom_eur=book.headroom_eur(rfq.isin, mark),
-            quoter_params=params.quoter_params,
-            costs=params.costs,
-            markout_tracker=markout_tracker,
-            response_tracker=response_tracker,
-            compliance_log=compliance_log,
-        )
-        outcomes.append(outcome)
-        if outcome.quote is None or outcome.live_quote is None:
-            continue
-        quotes.append(outcome.quote)
-
-        accept_ts = decide_acceptance(
-            outcome.quote,
-            rng,
-            p_accept=params.p_accept,
-            reaction_delay_range=params.reaction_delay_range,
-        )
-        if accept_ts is None:
-            continue
-
-        accept_size = min(rfq.requested_size_eur, outcome.quote.firm_size_eur)
-        n_breaches_before = len(compliance_log.breach_events)
-        fill = accept_quote(
-            outcome.live_quote,
-            accept_ts,
-            accept_size,
-            rfq.side,
-            rfq.requester_id,
-            feed=feed,
-            venue_config=venue_config,
-            is_informed=rfq.is_informed,
-            informed_drift_bps=flow_params.informed_drift_bps,
-            markout_tracker=markout_tracker,
-            compliance_log=compliance_log,
-            markout_feedback_horizon_seconds=params.markout_feedback_horizon_seconds,
-        )
-        if len(compliance_log.breach_events) > n_breaches_before:
-            active_halts[rfq.isin] = compliance_log.breach_events[-1].halt_until
-        if fill is None:
-            continue
-
-        fills.append(fill)
-        filled_quote_ids.add(fill.quote_id)
-        book.record_fill(fill)
-        mark = feed.bbo(fill.ts, fill.isin, fill.size_eur).mid
-        final_mark[fill.isin] = mark
-        inventory_snapshots[fill.isin].append((fill.ts, book.position_eur(fill.isin, mark)))
-
-        if book.is_killed(fill.isin, mark):
-            killed_isins.add(fill.isin)
-
-        hedge_bbo = feed.bbo(fill.ts, fill.isin, accept_size)
-        hedge = maybe_hedge(
-            fill.isin, book.units(fill.isin), hedge_bbo, fill.ts, params.hedge_params
-        )
-        if hedge is not None:
-            book.apply_hedge(fill.isin, hedge.side.sign, hedge.units, hedge.price, hedge.ts)
-            hedges.append(hedge)
-            mark = feed.bbo(hedge.ts, hedge.isin, hedge.units * hedge.price).mid
-            final_mark[hedge.isin] = mark
-            inventory_snapshots[hedge.isin].append((hedge.ts, book.position_eur(hedge.isin, mark)))
+        elif kind == 1:
+            assert isinstance(payload, LimitOrder)
+            lom_book.add(payload)
+        else:
+            for isin in params.isins:
+                if isin in state.killed_isins:
+                    continue
+                bbo = feed.bbo(ts, isin, 1_000.0)
+                for order in lom_book.recheck(isin, bbo):
+                    lom_fire_seq += 1
+                    synthetic_rfq = RFQ(
+                        rfq_id=f"lom-fire-{lom_fire_seq:06d}",
+                        ts=ts,
+                        isin=order.isin,
+                        requester_id=order.requester_id,
+                        side=order.side,
+                        requested_size_eur=order.size_eur,
+                        is_exempt=False,
+                    )
+                    _process_rfq(
+                        synthetic_rfq,
+                        forced_accept_ts=ts,
+                        venue_config=venue_config,
+                        venue_session=venue_session,
+                        reference_session=reference_session,
+                        feed=feed,
+                        instruments=instruments,
+                        flow_params=flow_params,
+                        sim_params=params,
+                        state=state,
+                    )
 
     day_end = venue_session.session_close(params.sim_date) - timedelta(seconds=1)
     for isin in params.isins:
-        closing_mark = final_mark.get(isin)
+        closing_mark = state.final_mark.get(isin)
         if closing_mark is None:
             try:
                 closing_mark = feed.bbo(day_end, isin, 1_000.0).mid
             except ValueError:
                 closing_mark = 0.0
-            final_mark[isin] = closing_mark
-        inventory_snapshots[isin].append((day_end, book.position_eur(isin, closing_mark)))
+            state.final_mark[isin] = closing_mark
+        closing_position = state.book.position_eur(isin, closing_mark)
+        state.inventory_snapshots[isin].append((day_end, closing_position))
 
     return SimulationResult(
         sim_date=params.sim_date,
         rfqs=flow.rfqs,
-        quotes=quotes,
-        fills=fills,
-        filled_quote_ids=filled_quote_ids,
-        hedges=hedges,
-        outcomes=outcomes,
-        compliance_log=compliance_log,
-        response_tracker=response_tracker,
-        inventory_snapshots=inventory_snapshots,
-        final_units={isin: book.units(isin) for isin in params.isins},
-        final_mark=final_mark,
-        killed_isins=killed_isins,
+        quotes=state.quotes,
+        fills=state.fills,
+        filled_quote_ids=state.filled_quote_ids,
+        hedges=state.hedges,
+        outcomes=state.outcomes,
+        compliance_log=state.compliance_log,
+        response_tracker=state.response_tracker,
+        inventory_snapshots=state.inventory_snapshots,
+        final_units={isin: state.book.units(isin) for isin in params.isins},
+        final_mark=state.final_mark,
+        killed_isins=state.killed_isins,
+        lom_orders=lom_orders,
     )
 
 

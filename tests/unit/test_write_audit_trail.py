@@ -38,6 +38,7 @@ def _result(fills: list[Fill], log: ComplianceLog) -> SimulationResult:
         final_units={},
         final_mark={},
         killed_isins=set(),
+        lom_orders=[],
     )
 
 

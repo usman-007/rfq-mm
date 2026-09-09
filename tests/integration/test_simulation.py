@@ -118,3 +118,44 @@ def test_killed_isin_stops_quoting_for_rest_of_day() -> None:
     later_outcomes = [o for o in result.outcomes if o.rfq.ts > first_fill_ts]
     assert later_outcomes  # there were RFQs after the kill switch tripped
     assert all(o.quote is None for o in later_outcomes)  # all of them went unquoted
+
+
+def test_lom_orders_recheck_and_auto_fire_rfqs() -> None:
+    """§3/§9 (PLAN.md Decision D14): a resting LOM order that becomes
+    marketable auto-fires an RFQ through the same process_rfq/accept_quote
+    pipeline as any client-initiated request, producing a real Fill."""
+    venue_config = load_venue_config("venues/eix.yaml")
+    venue_session, reference_session = build_sessions(venue_config)
+
+    isins = LIVE_SIM_ISINS[:2]
+    instruments = {isin: BY_ISIN[isin] for isin in isins}
+    feed = SyntheticFeed(
+        venue_session,
+        reference_session,
+        {isin: START_PRICES_EUR[isin] for isin in isins},
+        SyntheticFeedParams(seed=7),
+    )
+
+    params = SimulationParams(seed=7, sim_date=SIM_DATE, isins=isins)
+    result = run_day_simulation(
+        venue_config, venue_session, reference_session, feed, instruments, params
+    )
+
+    assert result.lom_orders  # the day generated some resting orders
+
+    lom_outcomes = [o for o in result.outcomes if o.rfq.rfq_id.startswith("lom-fire-")]
+    assert lom_outcomes  # at least one resting order became marketable
+
+    lom_fills = [
+        o
+        for o in lom_outcomes
+        if o.quote is not None and o.quote.quote_id in result.filled_quote_ids
+    ]
+    assert lom_fills  # and at least one of those actually produced a Fill
+
+    # every LOM-triggered fill belongs to a quote that was actually issued,
+    # same invariant as client-initiated RFQs
+    quote_ids = {q.quote_id for q in result.quotes}
+    for outcome in lom_outcomes:
+        if outcome.quote is not None:
+            assert outcome.quote.quote_id in quote_ids
