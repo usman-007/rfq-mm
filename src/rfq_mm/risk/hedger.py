@@ -27,6 +27,7 @@ class HedgeResult:
     side: Side  # direction of the hedge trade itself
     units: float
     price: float
+    mid_at_hedge: float
     cost_eur: float
 
 
@@ -51,5 +52,11 @@ def maybe_hedge(
 
     cost_eur = abs(price - mark_bbo.mid) * abs(hedge_units)
     return HedgeResult(
-        isin=isin, ts=ts, side=side, units=abs(hedge_units), price=price, cost_eur=cost_eur
+        isin=isin,
+        ts=ts,
+        side=side,
+        units=abs(hedge_units),
+        price=price,
+        mid_at_hedge=mark_bbo.mid,
+        cost_eur=cost_eur,
     )

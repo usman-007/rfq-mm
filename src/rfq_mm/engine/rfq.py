@@ -89,6 +89,8 @@ class RfqOutcome:
     rfq: RFQ
     quote: Quote | None
     live_quote: LiveQuote | None
+    reference_spread: float | None = None  # R152: bbo.spread at issuance, for charting
+    regulatory_cap: float | None = None  # R153: the §7(1) cap, None on the voluntary path
 
 
 def process_rfq(
@@ -168,7 +170,13 @@ def process_rfq(
         response_tracker.record(
             evaluated_rfq.isin, is_exempt=evaluated_rfq.is_exempt, was_answered=False
         )
-        return RfqOutcome(rfq=evaluated_rfq, quote=None, live_quote=None)
+        return RfqOutcome(
+            rfq=evaluated_rfq,
+            quote=None,
+            live_quote=None,
+            reference_spread=bbo.spread,
+            regulatory_cap=decision.regulatory_cap,
+        )
 
     bid, ask = round_quote(decision.raw_bid, decision.raw_ask, instrument.liquidity_band)
     ttl = evaluated_rfq.ts + timedelta(seconds=venue_config.quote.acceptance_window_seconds)
@@ -189,7 +197,13 @@ def process_rfq(
     response_tracker.record(
         evaluated_rfq.isin, is_exempt=evaluated_rfq.is_exempt, was_answered=True
     )
-    return RfqOutcome(rfq=evaluated_rfq, quote=quote, live_quote=live_quote)
+    return RfqOutcome(
+        rfq=evaluated_rfq,
+        quote=quote,
+        live_quote=live_quote,
+        reference_spread=bbo.spread,
+        regulatory_cap=decision.regulatory_cap,
+    )
 
 
 def decide_acceptance(
