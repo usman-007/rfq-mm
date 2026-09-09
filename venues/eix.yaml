@@ -1,0 +1,64 @@
+venue:
+  name: "EIX (European Investor Exchange)"
+  model: rfq_with_reference_market
+  operator: "BÖAG Börsen AG / Börse Hannover"
+  source: "Regelwerk European Investor Exchange, 09.12.2024"
+
+session:
+  timezone: Europe/Berlin
+  open: "08:00"
+  close: "22:00"
+  post_trading_minutes: 5
+  days: [mon, tue, wed, thu, fri]
+
+reference_market:
+  default: XETR
+  hours: { open: "09:00", close: "17:30" }
+
+quote:
+  acceptance_window_seconds: 10        # §8(1)
+  withdrawal_window_seconds: 25        # §8(2)
+  firm_size_breach_halt_seconds: 60    # §8(3)
+
+obligations:
+  min_response_ratio: 0.95             # §5(1), per calendar month
+  exemptions:                          # §5(2)
+    - { type: after_venue_open,        minutes: 15 }
+    - { type: around_reference_open,   before_minutes: 10, after_minutes: 15 }
+    - { type: reference_halt,          grace_minutes: 3 }
+    - { type: reference_indicative_only }
+    - { type: corporate_action_cum_day, after: "19:55" }
+    - { type: mm_system_outage }
+    - { type: suspected_manipulation }
+    - { type: conformity_check,        max_seconds: 30 }
+    - { type: extreme_move,            threshold_bps: 300, window_seconds: 60 }
+
+spread:
+  rule: not_outside_reference_spread   # §7(1)
+  include_costs: [trading, settlement, fx]
+  depth_aware: true                    # spread for the *requested size*
+
+guaranteed_volumes_eur:                # §7(1)
+  DAX:            { ref_open: 100000, ref_closed: 50000 }
+  MDAX:           { ref_open:  50000, ref_closed: 25000 }
+  SDAX:           { ref_open:  50000, ref_closed: 25000 }
+  TecDAX:         { ref_open:  50000, ref_closed: 25000 }
+  DOMESTIC_OTHER: { ref_open:  25000, ref_closed: 10000 }
+  DJ30:           { ref_open:  50000, ref_closed: 25000 }
+  US_OTHER:       { ref_open:  50000, ref_closed: 25000 }
+  ESTX50:         { ref_open: 100000, ref_closed: 50000 }
+  FOREIGN_OTHER:  { ref_open:  25000, ref_closed: 10000 }
+  ETF_DAX:        { ref_open: 500000, ref_closed: 100000 }
+  ETF_OTHER:      { ref_open: 100000, ref_closed: 20000 }
+  ETC:            { ref_open: 100000, ref_closed: 20000 }
+  ETP:            { ref_open: 100000, ref_closed: 20000 }
+  FUND:           { ref_open:  50000, ref_closed: 25000 }
+  leveraged_scaling: 0.5
+  discretionary_below_price_eur: 5.0   # §7(2)
+
+surveillance:                          # §12
+  max_rfq_per_participant_per_minute: 60
+  max_cancel_ratio: 0.9
+
+throttling:                            # §13 — modelled, not enforced
+  levels: [none, slow_low_priority, reject_low_priority, reject_all, manual_reconnect]
