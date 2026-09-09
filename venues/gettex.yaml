@@ -1,0 +1,78 @@
+# gettex (Börse München), operated by Bayerische Börse AG, market maker Baader Bank.
+# Source: "Ausführungsbestimmungen der Geschäftsführung zum Regelwerk der Börse
+# München", Stand 17.01.2025 (https://www.boerse-muenchen.de — publicly posted
+# execution rules). Sections cited below (§1, §6, §10-§12) are from that document.
+#
+# This second venue exists to prove the schema generalizes (spec.md §10), not to
+# be a perfectly complete gettex implementation. Every figure below is either (a)
+# directly sourced, cited by §, or (b) explicitly flagged as NOT SOURCED — a
+# placeholder reused from eix.yaml because the Ausführungsbestimmungen either
+# don't give a directly comparable figure, or express the underlying rule on a
+# basis this schema can't represent (see the NOT SOURCED comments). Per spec.md's
+# own principle ("if a rule cannot be expressed in config, the schema is wrong —
+# fix the schema, not the venue"), these gaps are schema-generality limits
+# discovered by testing against a second real venue, not gettex venue-specifics.
+
+venue:
+  name: "gettex (Börse München)"
+  model: rfq_with_reference_market
+  operator: "Bayerische Börse AG / Börse München"
+  source: "Ausführungsbestimmungen der Geschäftsführung zum Regelwerk der Börse München, Stand 17.01.2025, §§1, 6, 10-12"
+
+session:
+  timezone: Europe/Berlin
+  open: "08:00"                        # §1(1): Kernzeit 8:00-22:00
+  close: "22:00"
+  post_trading_minutes: 0              # no post-trading phase described in §1
+  days: [mon, tue, wed, thu, fri]
+
+reference_market:
+  default: XETR                        # §10(2): "für viele deutsche Aktien ist dies Xetra"
+  hours: { open: "09:00", close: "17:30" }
+
+quote:
+  acceptance_window_seconds: 120       # §10(1): MM should execute "spätestens 120 Sekunden" after notice (Spezialistenmodell figure; §12 gettex-specific text gives no separate number)
+  withdrawal_window_seconds: 25        # NOT SOURCED — no analogous MM withdrawal-window provision found; gettex instead has a post-trade Mistrade/erroneous-trade mechanism (§15) with a different shape. Placeholder reused from eix.yaml.
+  firm_size_breach_halt_seconds: 60    # NOT SOURCED — no halt duration given. Placeholder reused from eix.yaml.
+
+obligations:
+  min_response_ratio: 0.95             # NOT SOURCED — §11(1) requires quotes be answered "unverzüglich" (without delay) but gives no numeric ratio. Placeholder reused from eix.yaml.
+  exemptions:                          # §11(3): quoting duty does not apply when... (only conditions with a reasonably direct match to this schema's existing exemption vocabulary are included)
+    - { type: reference_halt,          grace_minutes: 3 }   # "wenn am Referenzmarkt der fortlaufende Handel unterbrochen ist" — grace_minutes not given, reused from eix.yaml
+    - { type: suspected_manipulation }                       # "begründeter Verdacht auf Missbrauch ... oder Beeinflussung des Referenzmarktes"
+    - { type: mm_system_outage }                             # "technischer Probleme im Bereich des Market Makers, des Börsensystems oder von Datenprovidern"
+    - { type: corporate_action_cum_day, after: "19:55" }     # "Wertpapiere, bei denen am darauffolgenden Börsentag Kapitalmaßnahmen ... anstehen" — approximates a "day-before" provision with eix.yaml's same-day cutoff shape; after: time NOT SOURCED
+    # §11(3) also exempts (a) requests exceeding the firm size — handled structurally
+    # by this simulator's size cap, not a listed exemption — and (b) insufficient
+    # reference-market order-book depth, which has no matching exemption type in
+    # this schema (a genuine gap, not modelled here).
+
+spread:
+  rule: not_outside_reference_spread   # §12(1)(a)/§10(4) table: spreads must be "wie Xetra oder besser" (as good as or better than Xetra) — same rule as EIX
+  include_costs: [trading, settlement, fx]   # §12(1)(a): MM may add up to 0.5% for FX conversion, plus transaction-cost markups/markdowns
+  depth_aware: true
+
+guaranteed_volumes_eur:                # §11(2)(a)-(b): "Volumen in EUR" the MM must quote on request, when the reference/home market is open
+  DAX:            { ref_open: 200000, ref_closed: 1 }   # §11(2)(a) "DAX 40": 200,000. ref_closed: §12(1)(a) says a guarantee is given only "sofern der Heimatmarkt geöffnet hat" (i.e. ~none when closed) — this schema requires a positive number, so ref_closed uses a token placeholder (see file header) rather than the real "no guarantee" rule
+  MDAX:           { ref_open:  75000, ref_closed: 1 }   # §11(2)(a)
+  SDAX:           { ref_open:  75000, ref_closed: 1 }   # NOT SOURCED — §11(2)(a)'s table has no separate SDAX row; assumed equal to MDAX/TecDAX tier
+  TecDAX:         { ref_open:  75000, ref_closed: 1 }   # §11(2)(a)
+  DOMESTIC_OTHER: { ref_open:  25000, ref_closed: 1 }   # §11(2)(a) "Sonstige inländische Aktien"
+  DJ30:           { ref_open: 100000, ref_closed: 1 }   # §11(2)(a) "Dow Jones 30"
+  US_OTHER:       { ref_open:  50000, ref_closed: 1 }   # §11(2)(a) "Sonstige amerikanische Aktien" (the table's separate "Nasdaq 100": 75,000 row isn't representable — this schema has no matching segment)
+  ESTX50:         { ref_open: 200000, ref_closed: 1 }   # §11(2)(a) "EuroStoxx 50"
+  FOREIGN_OTHER:  { ref_open:  25000, ref_closed: 1 }   # §11(2)(a) "Sonstige europäische Aktien"
+  ETF_DAX:        { ref_open: 1000000, ref_closed: 1 }  # §11(2)(b) "DAX-ETFs"
+  ETF_OTHER:      { ref_open: 100000, ref_closed: 1 }   # §11(2)(b) "Sonstige ETFs" (the table's separate "ETFs auf andere Hauptindizes": 500,000 tier isn't representable — one ETF_OTHER segment only)
+  ETC:            { ref_open: 100000, ref_closed: 1 }   # §11(2)(b)
+  ETP:            { ref_open: 100000, ref_closed: 1 }   # NOT SOURCED — no separate ETP row; assumed equal to ETC
+  FUND:           { ref_open: 500000, ref_closed: 1 }   # §11(2)(b) "Investmentfonds" (§12(1)(b) gives a more granular by-fund-type table — 100k-500k depending on type — not representable with one FUND segment)
+  leveraged_scaling: 0.5                # NOT SOURCED — §11(2)(d) expresses leveraged/derivative guarantees on a unit-count basis (10,000 Stück / EUR 3,000), not a scaling factor on the underlying's guarantee. Placeholder reused from eix.yaml.
+  discretionary_below_price_eur: 5.0    # NOT SOURCED — no analogous low-price discretionary threshold found. Placeholder reused from eix.yaml.
+
+surveillance:                          # NOT SOURCED as given — §3's Order-Transaktions-Verhältnis (OTV) caps order-to-trade ratios (volume-based max 10,000, count-based max 200), a materially different metric than this schema's per-minute-request-count / cancel-ratio shape. Placeholders reused from eix.yaml rather than a forced unit conversion.
+  max_rfq_per_participant_per_minute: 60
+  max_cancel_ratio: 0.9
+
+throttling:                            # not addressed in the reviewed Ausführungsbestimmungen sections; reusing eix.yaml's modelled-not-enforced levels for schema completeness
+  levels: [none, slow_low_priority, reject_low_priority, reject_all, manual_reconnect]

@@ -200,3 +200,18 @@ START_PRICES_EUR: dict[str, float] = {
 
 # EUR/Xetra domestic instruments used in the live day-simulation (Decision D2).
 LIVE_SIM_ISINS: list[str] = [i.isin for i in DAX_INSTRUMENTS + ETF_INSTRUMENTS]
+
+# yfinance tickers for the `bars` feed tier (spec.md §2 names SAP.DE, SIE.DE,
+# EXS1.DE, IWDA.AS as example German/European tickers). Only instruments with
+# a real, verifiable ticker are listed here — the synthetic placeholders have
+# no real market to fetch bars for.
+YFINANCE_TICKERS: dict[str, str] = {
+    "DE0007164600": "SAP.DE",
+    "DE0007236101": "SIE.DE",
+    "DE0008404005": "ALV.DE",
+    "DE0005557508": "DTE.DE",
+    "DE0005190003": "BMW.DE",
+    "DE000BASF111": "BAS.DE",
+    "DE0005933931": "EXS1.DE",
+    "IE00B4L5Y983": "IWDA.AS",
+}

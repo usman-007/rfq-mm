@@ -185,7 +185,12 @@ def test_firm_size_breach_blocks_further_fills_and_triggers_halt(venue_config, f
         ttl_expiry_ts=ts + timedelta(seconds=10),
         is_voluntary=False,
     )
-    live_quote = LiveQuote(quote=quote, remaining_firm_size_eur=1_000.0, status=QuoteStatus.OPEN)
+    live_quote = LiveQuote(
+        quote=quote,
+        remaining_firm_size_eur=1_000.0,
+        status=QuoteStatus.OPEN,
+        issuance_mid=current.mid,
+    )
     log = ComplianceLog.empty()
 
     fill1 = accept_quote(
@@ -259,7 +264,12 @@ def test_informed_fill_injects_drift_into_future_prices(venue_config, feed) -> N
         ttl_expiry_ts=ts + timedelta(seconds=10),
         is_voluntary=False,
     )
-    live_quote = LiveQuote(quote=quote, remaining_firm_size_eur=1_000.0, status=QuoteStatus.OPEN)
+    live_quote = LiveQuote(
+        quote=quote,
+        remaining_firm_size_eur=1_000.0,
+        status=QuoteStatus.OPEN,
+        issuance_mid=current.mid,
+    )
     fill = accept_quote(
         live_quote,
         ts + timedelta(seconds=1),

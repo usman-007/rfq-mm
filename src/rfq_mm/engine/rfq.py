@@ -40,6 +40,7 @@ class LiveQuote:
     quote: Quote
     remaining_firm_size_eur: float
     status: QuoteStatus
+    issuance_mid: float  # reference mid at issuance, for the §8(2) "market moved" check
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,7 +193,10 @@ def process_rfq(
         is_voluntary=decision.is_voluntary_path,
     )
     live_quote = LiveQuote(
-        quote=quote, remaining_firm_size_eur=quote.firm_size_eur, status=QuoteStatus.OPEN
+        quote=quote,
+        remaining_firm_size_eur=quote.firm_size_eur,
+        status=QuoteStatus.OPEN,
+        issuance_mid=bbo.mid,
     )
     response_tracker.record(
         evaluated_rfq.isin, is_exempt=evaluated_rfq.is_exempt, was_answered=True
@@ -250,17 +254,17 @@ def accept_quote(
 
     trade_price = quote.ask if side is Side.BUY else quote.bid
     current_bbo = feed.bbo(accept_ts, quote.isin, accept_size_eur)
-    # "outside the current reference spread" is judged against a band of the
-    # *same width the quote itself was issued with*, recentered on the
-    # current mid — not the raw current bid/ask. The quoted width already
-    # includes the §7(1) cost allowance (R9), which is often wider than the
-    # raw reference spread; comparing against the raw spread directly would
-    # flag most clamped quotes as "withdrawn" on zero net market movement.
-    band_half_width = quote.spread / 2.0
-    if (
-        trade_price < current_bbo.mid - band_half_width
-        or trade_price > current_bbo.mid + band_half_width
-    ):
+    # "the accepted side now lying outside the current reference spread" is
+    # about the *reference market* moving since issuance, not about how far
+    # the MM's own price sits from mid — inventory skew and the §7(1) cost
+    # allowance both legitimately place trade_price away from mid even with
+    # zero market movement, so comparing trade_price directly against a
+    # mid-centered band (an earlier version of this check) flagged most
+    # quotes as "withdrawn" regardless of whether the market had moved at
+    # all. Instead: has the reference mid itself moved by more than roughly
+    # one reference-spread's width since the quote was issued?
+    reference_move = abs(current_bbo.mid - live_quote.issuance_mid)
+    if reference_move > current_bbo.spread:
         live_quote.status = QuoteStatus.WITHDRAWN
         compliance_log.withdrawal_events.append(
             WithdrawalEvent(ts=accept_ts, isin=quote.isin, quote_id=quote.quote_id)

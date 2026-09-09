@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 
 from numpy.random import default_rng
 
+from rfq_mm.compliance.audit import AuditLog
 from rfq_mm.core.clock import SessionCalendar
 from rfq_mm.core.types import RFQ, Fill, Instrument, Quote
 from rfq_mm.engine.quoter import MarkoutTracker, QuoterParams, TradingCosts
@@ -209,3 +210,55 @@ def run_day_simulation(
         final_mark=final_mark,
         killed_isins=killed_isins,
     )
+
+
+def write_audit_trail(
+    result: SimulationResult, instruments: dict[str, Instrument], audit_log: AuditLog
+) -> None:
+    """§15: one audit record per material event of the day — every fill
+    (with FX rate/conversion formula for non-EUR instruments), withdrawal,
+    firm-size breach, and regulatory-clamp event."""
+    for fill in result.fills:
+        instrument = instruments[fill.isin]
+        fx_rate = instrument.fx_rate_to_eur
+        fx_formula = "price_eur = price_local * fx_rate" if fx_rate is not None else None
+        audit_log.record(
+            fill.ts,
+            "fill",
+            fill.isin,
+            {
+                "fill_id": fill.fill_id,
+                "quote_id": fill.quote_id,
+                "side": fill.side.value,
+                "price": fill.price,
+                "size_eur": fill.size_eur,
+                "requester_id": fill.requester_id,
+                "is_informed_label": fill.is_informed_label,
+            },
+            fx_rate=fx_rate,
+            fx_conversion_formula=fx_formula,
+        )
+
+    for withdrawal in result.compliance_log.withdrawal_events:
+        audit_log.record(
+            withdrawal.ts,
+            "withdrawal",
+            withdrawal.isin,
+            {"quote_id": withdrawal.quote_id},
+        )
+
+    for breach in result.compliance_log.breach_events:
+        audit_log.record(
+            breach.ts,
+            "firm_size_breach",
+            breach.isin,
+            {"quote_id": breach.quote_id, "halt_until": breach.halt_until.isoformat()},
+        )
+
+    for clamp in result.compliance_log.clamp_events:
+        audit_log.record(
+            clamp.ts,
+            "clamp_bound",
+            clamp.isin,
+            {"risk_delta": clamp.risk_delta, "regulatory_cap": clamp.regulatory_cap},
+        )

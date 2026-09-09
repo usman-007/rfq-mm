@@ -28,8 +28,18 @@ from rfq_mm.venue.guarantees import guaranteed_volume_for
 
 @dataclass(frozen=True, slots=True)
 class QuoterParams:
-    gamma: float = 0.1  # risk aversion
-    kappa: float = 1.5  # A-S order-arrival intensity decay
+    # Calibrated for a low-hundreds-of-euros DAX-large-cap price scale (sigma
+    # here is absolute EUR, not fractional — see the module docstring): with
+    # kappa=40, the inventory-independent "floor" term (2/gamma)*ln(1+gamma/kappa)
+    # approx= 2/kappa is a nickel-scale spread; gamma=0.005 makes a ~10-share
+    # position add roughly another reference-spread's worth of skew, so the
+    # §7(1) clamp binds sometimes (as inventory/vol build) rather than always
+    # or never. A much larger gamma (e.g. 0.1) makes even a single-share
+    # position skew the quote by nearly a euro, which clamps every quote
+    # regardless of inventory and hides the clamp/exemption tension the
+    # spread cap is supposed to create (found via the `mm run` CLI smoke test).
+    gamma: float = 0.005  # risk aversion
+    kappa: float = 40.0  # A-S order-arrival intensity decay
     use_micro_price: bool = False
     per_quote_cap_eur: float = 200_000.0
     adverse_selection_scale: float = 1.0  # multiplies the tracked recent markout (bps)
@@ -165,6 +175,12 @@ def price_quote(
 ) -> QuoteDecision:
     fv = fair_value(bbo, use_micro_price=params.use_micro_price)
     r = reservation_price(fv, inventory_units, params.gamma, sigma, t_remaining_frac)
+    # Sanity-bound the reservation price: at extreme (but sub-kill-switch)
+    # inventory the A-S skew term can in principle push r non-positive or to
+    # an absurd multiple of fair value. Real systems always bound quote
+    # prices regardless of what a risk model outputs; this is that bound,
+    # not a tuning knob (it should rarely if ever actually bind).
+    r = min(max(r, fv * 0.1), fv * 10.0)
 
     adverse_premium_bps = max(0.0, markout_tracker.current(instrument.isin)) * (
         params.adverse_selection_scale
