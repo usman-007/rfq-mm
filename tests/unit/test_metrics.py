@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from rfq_mm.analytics.metrics import (
     compute_fill_spread_stats,
     compute_markouts,
@@ -9,10 +11,12 @@ from rfq_mm.analytics.metrics import (
     intraday_sharpe,
     inventory_path_stats,
     markout_summary,
+    quoted_vs_reference_series,
     size_bucket,
     volume_weighted_effective_spread_bps,
 )
-from rfq_mm.core.types import Fill, Quote, Side
+from rfq_mm.core.types import RFQ, Fill, Quote, Side
+from rfq_mm.engine.rfq import RfqOutcome
 from rfq_mm.risk.hedger import HedgeParams, maybe_hedge
 from rfq_mm.risk.inventory import InventoryBook
 
@@ -193,3 +197,72 @@ def test_pnl_attribution_reconciles_within_a_cent(feed) -> None:
     attribution = compute_pnl_attribution(fills, hedges, feed, final_units, final_mark)
     assert attribution.reconciliation_error_eur() < 0.01
     assert hedges  # sanity: the hedge path was actually exercised by this test
+
+
+def _rfq(rfq_id: str = "rfq1") -> RFQ:
+    return RFQ(
+        rfq_id=rfq_id,
+        ts=TS,
+        isin=ISIN,
+        requester_id="r1",
+        side=Side.BUY,
+        requested_size_eur=1_000.0,
+        is_exempt=False,
+    )
+
+
+def test_quoted_vs_reference_series_computes_bps_and_clamp_flag() -> None:
+    quote = Quote(
+        quote_id="q1",
+        rfq_id="rfq1",
+        ts_issued=TS,
+        isin=ISIN,
+        bid=99.9,
+        ask=100.1,  # spread = 0.2, mid = 100.0 -> 20 bps
+        firm_size_eur=1_000.0,
+        ttl_expiry_ts=TS + timedelta(seconds=10),
+        is_voluntary=False,
+    )
+    clamped_outcome = RfqOutcome(
+        rfq=_rfq(),
+        quote=quote,
+        live_quote=None,
+        reference_spread=0.3,  # 30 bps reference
+        regulatory_cap=0.2,  # cap == quoted spread -> was_clamped
+    )
+    no_quote_outcome = RfqOutcome(rfq=_rfq("rfq2"), quote=None, live_quote=None)
+
+    df = quoted_vs_reference_series([clamped_outcome, no_quote_outcome])
+
+    assert len(df) == 1  # the no-quote outcome is skipped
+    row = df.iloc[0]
+    assert row["quoted_spread_bps"] == pytest.approx(20.0)
+    assert row["reference_spread_bps"] == pytest.approx(30.0)
+    assert row["cap_bps"] == pytest.approx(20.0)
+    assert bool(row["was_clamped"]) is True
+
+
+def test_quoted_vs_reference_series_unclamped_when_below_cap() -> None:
+    quote = Quote(
+        quote_id="q1",
+        rfq_id="rfq1",
+        ts_issued=TS,
+        isin=ISIN,
+        bid=99.95,
+        ask=100.05,  # spread = 0.1, mid = 100.0 -> 10 bps
+        firm_size_eur=1_000.0,
+        ttl_expiry_ts=TS + timedelta(seconds=10),
+        is_voluntary=False,
+    )
+    outcome = RfqOutcome(
+        rfq=_rfq(), quote=quote, live_quote=None, reference_spread=0.3, regulatory_cap=0.2
+    )
+
+    df = quoted_vs_reference_series([outcome])
+
+    assert bool(df.iloc[0]["was_clamped"]) is False
+
+
+def test_quoted_vs_reference_series_empty_input() -> None:
+    df = quoted_vs_reference_series([])
+    assert df.empty
