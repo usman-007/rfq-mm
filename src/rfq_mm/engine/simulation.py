@@ -22,6 +22,7 @@ from rfq_mm.core.types import RFQ, Fill, Instrument, Quote
 from rfq_mm.engine.quoter import MarkoutTracker, QuoterParams, TradingCosts
 from rfq_mm.engine.rfq import (
     ComplianceLog,
+    HaltBlockedEvent,
     RfqOutcome,
     accept_quote,
     decide_acceptance,
@@ -33,6 +34,33 @@ from rfq_mm.risk.hedger import HedgeParams, HedgeResult, maybe_hedge
 from rfq_mm.risk.inventory import InventoryBook, InventoryLimits
 from rfq_mm.venue.config import VenueConfig
 from rfq_mm.venue.obligations import ResponseRatioTracker
+
+
+def _active_halt(
+    active_halts: dict[str, datetime], isin: str, ts: datetime
+) -> datetime | None:
+    """§8(3): returns the still-active halt_until for `isin` as of `ts`, or
+    None if it isn't halted (expiring + removing a stale entry as a side
+    effect, so a caller never has to separately clean the dict up).
+
+    Honesty note: the firm-size breach that triggers a halt requires
+    cumulative fills against *one* quote to exceed its firm size (§8(3)),
+    and this simulator issues a fresh quote per RFQ with only that RFQ's
+    requester able to accept it (Quote:Fill is 1:many in the data model,
+    but nothing in this loop ever produces more than one accept_quote()
+    call per quote) — so a breach, and therefore a halt, cannot actually
+    occur via run_day_simulation as currently architected. The mechanism
+    itself (accept_quote's remaining_firm_size_eur budget, and the halt
+    gating here) is real and directly unit-tested at both layers; it's
+    exercised end-to-end only if a future caller starts routing multiple
+    acceptances at the same quote_id."""
+    halt_until = active_halts.get(isin)
+    if halt_until is None:
+        return None
+    if ts < halt_until:
+        return halt_until
+    del active_halts[isin]
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +129,7 @@ def run_day_simulation(
         isin: [] for isin in params.isins
     }
     killed_isins: set[str] = set()
+    active_halts: dict[str, datetime] = {}  # isin -> halt_until, §8(3)
     final_mark: dict[str, float] = {}
 
     day_start = venue_session.session_open(params.sim_date)
@@ -113,6 +142,15 @@ def run_day_simulation(
         final_mark[rfq.isin] = mark
 
         if rfq.isin in killed_isins:
+            outcomes.append(RfqOutcome(rfq=rfq, quote=None, live_quote=None))
+            continue
+
+        halt_until = _active_halt(active_halts, rfq.isin, rfq.ts)
+        if halt_until is not None:
+            compliance_log.halted_events.append(
+                HaltBlockedEvent(ts=rfq.ts, isin=rfq.isin, rfq_id=rfq.rfq_id, halt_until=halt_until)
+            )
+            response_tracker.record(rfq.isin, is_exempt=True, was_answered=False)
             outcomes.append(RfqOutcome(rfq=rfq, quote=None, live_quote=None))
             continue
 
@@ -146,6 +184,7 @@ def run_day_simulation(
             continue
 
         accept_size = min(rfq.requested_size_eur, outcome.quote.firm_size_eur)
+        n_breaches_before = len(compliance_log.breach_events)
         fill = accept_quote(
             outcome.live_quote,
             accept_ts,
@@ -160,6 +199,8 @@ def run_day_simulation(
             compliance_log=compliance_log,
             markout_feedback_horizon_seconds=params.markout_feedback_horizon_seconds,
         )
+        if len(compliance_log.breach_events) > n_breaches_before:
+            active_halts[rfq.isin] = compliance_log.breach_events[-1].halt_until
         if fill is None:
             continue
 
@@ -253,6 +294,14 @@ def write_audit_trail(
             "firm_size_breach",
             breach.isin,
             {"quote_id": breach.quote_id, "halt_until": breach.halt_until.isoformat()},
+        )
+
+    for halted in result.compliance_log.halted_events:
+        audit_log.record(
+            halted.ts,
+            "halt_blocked_rfq",
+            halted.isin,
+            {"rfq_id": halted.rfq_id, "halt_until": halted.halt_until.isoformat()},
         )
 
     for clamp in result.compliance_log.clamp_events:

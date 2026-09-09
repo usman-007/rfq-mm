@@ -128,6 +128,7 @@ def _context() -> dict:
         "n_clamp_events": 2,
         "n_withdrawals": 0,
         "n_firm_size_breaches": 0,
+        "n_halted_rfqs": 0,
         "is_compliant": True,
         "breaches": [],
         "reconciliation_error_eur": 0.0,

@@ -74,15 +74,30 @@ class FirmSizeBreachEvent:
     halt_until: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class HaltBlockedEvent:
+    """R15: an RFQ that arrived while its ISIN was inside an active §8(3)
+    halt window received no quote. Excluded from the §5(1) response-ratio
+    denominator (engine/simulation.py) on the same reasoning as a §5(2)
+    exemption: the desk isn't discretionarily failing to respond, a
+    regulatory-triggered halt is blocking it."""
+
+    ts: datetime
+    isin: str
+    rfq_id: str
+    halt_until: datetime
+
+
 @dataclass(slots=True)
 class ComplianceLog:
     clamp_events: list[ClampEvent]
     withdrawal_events: list[WithdrawalEvent]
     breach_events: list[FirmSizeBreachEvent]
+    halted_events: list[HaltBlockedEvent]
 
     @classmethod
     def empty(cls) -> ComplianceLog:
-        return cls([], [], [])
+        return cls([], [], [], [])
 
 
 @dataclass(frozen=True, slots=True)

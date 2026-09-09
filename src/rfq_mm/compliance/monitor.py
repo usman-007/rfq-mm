@@ -29,6 +29,7 @@ class ComplianceReport:
     n_clamp_events: int
     n_withdrawals: int
     n_firm_size_breaches: int
+    n_halted_rfqs: int
     withdrawal_rate: float
     breaches: tuple[ComplianceBreach, ...]
 
@@ -81,6 +82,7 @@ def build_compliance_report(
         n_clamp_events=len(compliance_log.clamp_events),
         n_withdrawals=len(compliance_log.withdrawal_events),
         n_firm_size_breaches=len(compliance_log.breach_events),
+        n_halted_rfqs=len(compliance_log.halted_events),
         withdrawal_rate=withdrawal_rate,
         breaches=tuple(breaches),
     )

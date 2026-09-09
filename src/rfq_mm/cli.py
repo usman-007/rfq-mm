@@ -194,7 +194,8 @@ def run(
     )
     typer.echo(
         f"Clamp events: {report.n_clamp_events}  Withdrawals: {report.n_withdrawals} "
-        f"Firm-size breaches: {report.n_firm_size_breaches}"
+        f"Firm-size breaches: {report.n_firm_size_breaches}  "
+        f"Halted RFQs: {report.n_halted_rfqs}"
     )
     if report.is_compliant:
         typer.secho("Compliance: OK", fg=typer.colors.GREEN)
@@ -301,6 +302,7 @@ def report(
         "n_clamp_events": compliance.n_clamp_events,
         "n_withdrawals": compliance.n_withdrawals,
         "n_firm_size_breaches": compliance.n_firm_size_breaches,
+        "n_halted_rfqs": compliance.n_halted_rfqs,
         "is_compliant": compliance.is_compliant,
         "breaches": [{"category": b.category, "detail": b.detail} for b in compliance.breaches],
         "reconciliation_error_eur": attribution.reconciliation_error_eur(),
