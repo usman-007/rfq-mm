@@ -46,6 +46,7 @@ class FlowParams:
     min_size_eur: float = 10.0
     buy_probability: float = 0.5
     informed_fraction: float = 0.1
+    informed_drift_bps: float = 15.0  # magnitude of post-fill drift injected for informed fills
     n_requesters: int = 500
     abuser_fraction: float = 0.02
     abuser_rate_multiplier: float = 25.0
@@ -61,13 +62,17 @@ def _intensity_per_hour(x: float, minutes_since_open: float, p: FlowParams) -> f
     """lambda(t) in requests/hour: U-shaped session profile + Gaussian bump at
     15:30 CET (US open), per R104-R105."""
     base = p.base_lambda_per_hour * (1.0 + p.u_shape_amplitude * (2.0 * x - 1.0) ** 2)
-    bump = p.base_lambda_per_hour * p.us_open_bump_amplitude * math.exp(
-        -0.5
-        * (
-            (minutes_since_open - p.us_open_bump_center_minutes_from_open)
-            / p.us_open_bump_width_minutes
+    bump = (
+        p.base_lambda_per_hour
+        * p.us_open_bump_amplitude
+        * math.exp(
+            -0.5
+            * (
+                (minutes_since_open - p.us_open_bump_center_minutes_from_open)
+                / p.us_open_bump_width_minutes
+            )
+            ** 2
         )
-        ** 2
     )
     return base + bump
 

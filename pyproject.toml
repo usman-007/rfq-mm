@@ -43,6 +43,9 @@ build-backend = "uv_build"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Never touch docs — ruff format reformats fenced ```python blocks inside
+# markdown by default, and spec.md must stay byte-for-byte as given.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

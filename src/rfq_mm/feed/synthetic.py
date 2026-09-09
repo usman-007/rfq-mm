@@ -116,6 +116,24 @@ class SyntheticFeed:
             is_indicative=bool(path.is_indicative[idx]),
         )
 
+    def apply_informed_drift(self, isin: str, ts: datetime, drift_bps: float) -> None:
+        """Shifts mid/bid/ask for all remaining timestamps in this day's
+        path by drift_bps, modelling the fair-value drift that follows an
+        informed fill (spec.md §2 informed fraction phi). Synthetic-only:
+        this is how the synthetic tier lets a markout estimator recover a
+        *known* informed fraction, per the honest framing in §2. Not part
+        of the ReferenceMarketFeed protocol — callers duck-type for it via
+        getattr, since bars/real_l1 feeds replay fixed historical data and
+        cannot be perturbed by a simulated fill (PLAN.md Decision D12)."""
+        local = ts.astimezone(self._venue_session.zone)
+        path = self._path_for(isin, local.date())
+        idx = path.index_for(local)
+        factor = 1.0 + drift_bps / 10_000.0
+        half_spread = (path.asks[idx:] - path.bids[idx:]) / 2.0
+        path.mids[idx:] *= factor
+        path.bids[idx:] = path.mids[idx:] - half_spread
+        path.asks[idx:] = path.mids[idx:] + half_spread
+
     def _path_for(self, isin: str, d: date) -> _InstrumentDayPath:
         key = (isin, d)
         cached = self._paths.get(key)
